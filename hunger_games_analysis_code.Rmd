@@ -1,0 +1,565 @@
+---
+title: "Hunger_Games_analysis"
+output:
+  html_document:
+    df_print: paged
+---
+# The Hunger Games (Full Trilogy) Analysis
+
+In this document I will analyse the trilogy by Suzanne Collins. I will do a 
+sentiment analysis of the books and try to gain more insight from this.
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=FALSE}
+data_dir <- "/Users/markscharmann/Coding/R/hunger_games_analysis/data"
+plots_dir <- "/Users/markscharmann/Coding/R/hunger_games_analysis/plots"
+```
+
+```{r}
+library(dplyr)
+library(tidytext)
+library(tidyr)
+library(tidyverse)
+library(purrr)
+library(widyr)
+
+library(quanteda)
+library(tm)
+
+library(ggplot2)
+library(igraph)
+library(ggraph)
+
+library(reshape2)
+library(wordcloud)
+```
+
+
+```{r,warning=FALSE, error=FALSE}
+library(pdftools)
+
+first_book <- pdf_text("/Users/markscharmann/Coding/R/hunger_games_analysis/hunger-games-18.pdf") %>% 
+  # we split the large character element which is created by pdftools
+  # on a pattern which is surprisingly accurate to the obs we get from pdftools
+  str_split(pattern = "\n") %>% 
+  # create a tibble from it
+  tibble("book" = "Hunger_Games", "text" = .) %>% 
+  # tell r that empty values are na's
+  na_if("") %>% 
+  na.omit
+
+second_book <- pdf_text("/Users/markscharmann/Coding/R/hunger_games_analysis/suzanne-collins-catching-fire.pdf") %>% 
+  str_split(pattern = "\n") %>% 
+  # create a tibble from it
+  tibble("book" = "Catching_Fire", "text" = .) %>% 
+  # tell r that empty values are na's
+  na_if("") %>% 
+  # kick the na's
+  na.omit
+
+third_book <- pdf_text("/Users/markscharmann/Coding/R/hunger_games_analysis/suzanna-kollinz-acliq-oyunlari-3-hisse-eng.pdf") %>% 
+  str_split(pattern = "\n") %>% 
+  # create a tibble from it
+  tibble("book" = "Mockingjay", "text" = .) %>% 
+  # tell r that empty values are na's
+  na_if("") %>% 
+  # kick the na's
+  na.omit
+
+
+trilogy <- rbind(first_book, second_book, third_book)
+```
+
+
+```{r,warning=FALSE, error=FALSE}
+pack_row_to_tibble <- function(x, y){
+  book_name <- paste0(x)
+  new_tib <- tibble(book_name = x, "text" = y)
+  return(new_tib)
+}
+
+trilogy_row_packed_to_tibble <- map2(trilogy$book, trilogy$text, pack_row_to_tibble)
+
+trilogy_unpacked_to_tibble <- bind_rows(trilogy_row_packed_to_tibble)
+
+
+tilogy_na_m <- trilogy_unpacked_to_tibble %>% 
+  na_if("") %>% 
+  na.omit()
+
+tidy_trilogy <- tilogy_na_m %>% unnest_tokens(word, text)
+
+data(stop_words)
+tidy_trilogy <- tidy_trilogy %>% anti_join(stop_words)
+
+
+tidy_trilogy <-tidy_trilogy %>% mutate(word = removeNumbers(tidy_trilogy$word))
+
+tidy_trilogy <- tidy_trilogy %>% 
+  na_if("") %>% 
+  na.omit()
+
+```
+Here you can see a quick overview of the 100 most common words in the whole trilogy.
+```{r,warning=FALSE, error=FALSE}
+tidy_trilogy %>%
+  anti_join(stop_words) %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100))
+```
+
+## Sentiment Analysis
+### Word counts
+
+In this section I will use sentiment analysis to gain some insight into the 
+three books.
+Plus a graph of the total occurrences of the words of the worldcloud above.
+Not much of a surprise, but some of the most common words in the texts are either
+character names or central themes such as the capitol or the hunger games.
+```{r,warning=FALSE, error=FALSE}
+tidy_trilogy %>% 
+  group_by(book_name) %>% 
+  count(word, sort = TRUE) %>%
+  filter(n > 200)
+
+tidy_trilogy %>%
+  count(word, sort = TRUE) %>%
+  filter(n > 200) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n)) +
+  geom_col() +
+  xlab(NULL) +
+  coord_flip()
+
+```
+Maybe It would be a wise idea to delete the names of characters out of the 
+analysis as they are used very often and we want to know something about the
+sentiment in the books.
+However, I will leave the names in the analysis as not every character is in
+every book and names should not have any sentiment attached to them.
+```{r,warning=FALSE, error=FALSE}
+characters <- c("gale",  "katniss", "rue", "peeta", "haymitch", "snow", "finnick", "prim", "cinna")
+char_tib <- tibble(word = characters, lexicon = "custom")
+char_stop_words <- rbind(stop_words, char_tib)
+tidy_trilogy_no_names <- tidy_trilogy %>% anti_join(char_stop_words)
+
+tidy_trilogy_no_names %>% 
+  group_by(book_name) %>% 
+  count(word, sort = TRUE) %>%
+  filter(n > 200)
+
+tidy_trilogy_no_names %>%
+  count(word, sort = TRUE) %>%
+  filter(n > 200) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n)) +
+  geom_col() +
+  xlab(NULL) +
+  coord_flip()
+```
+Here you can see that the overall sentiment of the books is very negative.
+This is not unexpected as the books are about a distopian world.
+```{r,warning=FALSE, error=FALSE}
+
+hungergames_sentiment <- tidy_trilogy %>% 
+  inner_join(get_sentiments("bing")) %>% 
+  count(book_name, sentiment) %>% 
+  spread(sentiment, n, fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+
+hungergames_sentiment
+
+hungergames_sentiment_50 <- tidy_trilogy %>% 
+  inner_join(get_sentiments("bing")) %>% 
+  group_by(book_name) %>% 
+  mutate(index = row_number()) %>% 
+  count(book_name, index = index %/% 50, sentiment) %>% 
+  spread(sentiment, n, fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+
+
+ggplot(hungergames_sentiment_50, aes(index, sentiment, fill = book_name)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~book_name, ncol = 2, scales = "free_x")
+```
+
+In this section I use different dictionaries to analyse the sentiment of the 
+books. As one can see different dictionaries lead to different results.
+Very interesting is that using the bing dictionary nearly every section 
+(every 50 words) is considered over all negative. The AFINN dictionary seems
+more balanced for the books and the NRC dictionary seems to be very balanced.
+This is interesting as the Bing and NRC dictionaries are both dictionaries, which
+have only positive and negative sentiments attached to the words. In contrast to
+that the AFINN dictionary uses negative and positive values to indicate how strong
+a word is negative or positively connotated.
+
+Another this that has to be noted is that the NRC dictionary matches much more
+words than the other two dictionaries for the trilogy as indicated by the
+much higher index (each increas representing 50 words).
+
+
+
+```{r,warning=FALSE, error=FALSE}
+
+afinn <- tidy_trilogy %>% 
+  inner_join(get_sentiments("afinn")) %>% 
+  group_by(index = row_number() %/% 50) %>%
+  summarise(sentiment = sum(value)) %>% 
+  ungroup() %>% 
+  mutate(method = "AFINN")
+
+bing <- tidy_trilogy %>%
+    inner_join(get_sentiments("bing")) %>%
+    mutate(method = "Bing et al.") %>%
+  count(method, index = row_number() %/% 50, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+
+nrc <- tidy_trilogy %>%
+    inner_join(get_sentiments("nrc") %>%
+                 filter(sentiment %in% c("positive",
+                                         "negative"))) %>%
+   
+    mutate(method = "NRC") %>%
+  count(method, index = row_number() %/% 50, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+
+
+all <- bind_rows(afinn, bing, nrc)
+
+all %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_x")
+
+
+```
+As one can see the sentiment is much less negative for each book.
+How can that be?
+```{r,warning=FALSE, error=FALSE}
+
+hungergames_sentiment_nrc <- tidy_trilogy %>% 
+  inner_join(get_sentiments("nrc")) %>% 
+  count(book_name, sentiment) %>% 
+  spread(sentiment, n, fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+
+hungergames_sentiment_50_nrc <- tidy_trilogy %>% 
+  inner_join(get_sentiments("nrc")) %>% 
+  group_by(book_name) %>% 
+  mutate(index = row_number()) %>% 
+  count(book_name, index = index %/% 50, sentiment) %>% 
+  spread(sentiment, n, fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+
+
+ggplot(hungergames_sentiment_50_nrc , aes(index, sentiment, fill = book_name)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~book_name, ncol = 2, scales = "free_x")
+```
+In the amount or relation of negative and positive words in the respective
+dictionaries can be insight full. In the bing dictionary there are in absolute numbers
+and in relation to the positive words more negative words that can be matched.
+However, I doubt that this difference in word count can not be the only explanation
+for the difference in sentiment. The difference is to great.
+Another angle is that the positive words in the nrc dictionary match better the 
+word pool of the books that the positive words of the bing dictionary.
+
+What this difference in computed sentiment for the books demonstrates that there
+will be stark differences in sentiment based on who created the sentiment dictionary.
+This has ot be kept in mind for sentiment analysis and text mining in general.
+
+```{r,warning=FALSE, error=FALSE}
+get_sentiments("nrc") %>%
+     filter(sentiment %in% c("positive",
+                             "negative")) %>%
+  count(sentiment)
+
+get_sentiments("bing") %>%
+  count(sentiment)
+```
+Lets investigate further.
+
+As one can see now the bing dictionary is focused on just negative and positive
+sentiment. The nrc one has more categories than just that.
+One thing to notice is that mother is on both the negative and positive 
+sentiment charts present (as well as others). 
+
+In both dictionaries the name of Rue is conotated negative. Another interesting
+anomaly is that the bing dictionary has the word "peacekeeper" as positive. In the
+books the peacekeepers are the enforcers of the dictatorship and not conotated
+positively at least for the protagonist from whos perspective the books are 
+written.
+This further highlights the need for more customized sentiment dictionaries for
+specific use cases.
+
+```{r,warning=FALSE, error=FALSE}
+bing_word_counts <- tidy_trilogy %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+
+nrc_word_counts <- tidy_trilogy %>%
+  inner_join(get_sentiments("nrc")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+
+bing_word_counts %>%
+  group_by(sentiment) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(y = "Contribution to sentiment",
+       x = NULL) +
+  # flips the chart 
+  coord_flip()
+
+nrc_word_counts %>%
+  group_by(sentiment) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(y = "Contribution to sentiment",
+       x = NULL) +
+  # flips the chart 
+  coord_flip()
+
+get_sentiments("nrc")
+```
+##tf-idf
+The tf-idf (term frequency - inverted document frequency) describes how important
+a term is for the document it self.
+
+Zip's Law:
+Zipf’s law states that the frequency that a word appears is inversely proportional to its rank.
+
+```{r,warning=FALSE, error=FALSE}
+# dont really know the use of these graphs
+trilogy_words <- trilogy_unpacked_to_tibble %>% 
+  unnest_tokens(word, text) %>% 
+  count(book_name, word, sort = TRUE) %>% 
+  ungroup()
+
+total_trilogy_words <- trilogy_words %>% 
+  group_by(book_name) %>% 
+  summarize(total = sum(n))
+
+trilogy_words <- left_join(trilogy_words, total_trilogy_words)
+
+freq_by_rank <- trilogy_words %>% 
+  group_by(book_name) %>% 
+  mutate(rank = row_number(),
+         `term frequency` = n/total)
+
+freq_by_rank
+
+trilogy_words <- trilogy_words %>%
+  bind_tf_idf(word, book_name, n)
+trilogy_words
+
+trilogy_words %>%
+  select(-total) %>%
+  arrange(desc(tf_idf))
+``` 
+
+```{r,warning=FALSE, error=FALSE}
+# this is good to interpret
+trilogy_words %>%
+  arrange(desc(tf_idf)) %>%
+  mutate(word = factor(word, levels = rev(unique(word)))) %>%
+  group_by(book_name) %>%
+  top_n(15) %>%
+  ungroup %>%
+  ggplot(aes(word, tf_idf, fill = book_name)) +
+  geom_col(show.legend = FALSE) +
+  labs(x = NULL, y = "tf_idf") +
+  facet_wrap(~book_name, ncol = 2, scales = "free") +
+  coord_flip()
+```
+
+# Bigrams
+
+Now lets go from individual words to multiple or more precise to bigrams, two words
+which appear frequently by each others side.
+
+The most common bigrams by themselves do not teach us much as the most common
+bigrams are made up of connection words.
+```{r,warning=FALSE, error=FALSE}
+bigram_trilogy <-trilogy_unpacked_to_tibble %>% 
+  unnest_tokens(bigram, text, token = "ngrams", n = 2)
+bigram_trilogy
+
+bigram_trilogy %>% 
+  count(bigram, sort = TRUE)
+```
+After cleaning each of the words in the bigrams for stop words the picture gets
+much clearer.
+
+"District 12" and "hunger games" appear as the two most common ones, which are
+no surprises as both of them play a central role in the books. As well as all the
+others, alltough also book specific ones as the "quarter quell" or "district 13"
+are also among the top performer.
+
+```{r,warning=FALSE, error=FALSE}
+bigram_trilogy_sep <- bigram_trilogy %>% 
+  separate(bigram, c("word1", "word2"), sep = " ")
+
+bigram_trilogy_filtered <- bigram_trilogy_sep %>% 
+  filter(!word1 %in% stop_words$word) %>% 
+  filter(!word2 %in% stop_words$word)
+
+bigram_trilogy_count <- bigram_trilogy_filtered %>%
+  count(word1, word2, sort = TRUE)
+
+bigram_trilogy_count
+```
+Trigrams are not many in the books. For this the corpus I am working with is too
+small as to the prediciton power of these.
+The most common trigram is "star crossed lovers" with a count of 10, not much 
+considering the length of the books. The star crossed lovers were also mostly 
+used in the first and second book.
+
+```{r,warning=FALSE, error=FALSE}
+trilogy_unpacked_to_tibble%>% 
+  unnest_tokens(trigram, text, token = "ngrams", n = 3) %>%
+  separate(trigram, c("word1", "word2", "word3"), sep = " ") %>% 
+  filter(!word1 %in% stop_words$word,
+         !word2 %in% stop_words$word,
+         !word3 %in% stop_words$word) %>% 
+  count(word1, word2, word3, sort = TRUE)
+```
+In the hunger games the most important bigram, according to the tf-idf is the
+"sleeping bag". The sleeping bag is one of the most important items in the 
+first book. 
+One litte anomaly is the "leeg 1" bigram from the last book. The first leeg
+of the squat in which katniss is is important but not as important as the 
+"hanging tree". The hanging tree is a strong symbol in the books.
+"Force field" is the bigram most important to the second book. This is expected
+as in the second book the tributes try to escape the arena and the force field
+is blocking the way.
+
+```{r,warning=FALSE, error=FALSE}
+bigram_trilogy_united <- bigram_trilogy_filtered %>% 
+  unite(bigrams, word1, word2, sep = " ")
+
+bigram_trilogy_tf_idf <- bigram_trilogy_united %>% 
+  count(book_name, bigrams) %>%
+  bind_tf_idf(bigrams, book_name, n) %>% 
+  arrange(desc(tf_idf))
+
+bigram_trilogy_tf_idf
+```
+
+```{r,warning=FALSE, error=FALSE}
+bigram_trilogy_sep %>% 
+  filter(word1 == "not") %>% 
+  count(word1, word2, sort = TRUE)
+```
+## Bigrams and Sentiment
+Many of the positiv words are preceded in the original text by negation words,
+such as not, no or never for example.
+
+The words preceded by not, like seen below, are more often than not positive 
+words. Which in turn means that the computed sentiment above is skewed towards
+being more positive than it should be. 
+```{r,warning=FALSE, error=FALSE}
+not_words <- bigram_trilogy_sep %>% 
+  filter(word1 == "not") %>% 
+  inner_join(get_sentiments("afinn"), by = c(word2 = "word")) %>% 
+  count(word2, value, sort = TRUE) %>% 
+  ungroup()
+
+not_words %>% 
+  mutate(contribution = n * value) %>% 
+  arrange(desc(abs(contribution))) %>% 
+  head(20) %>% 
+  mutate(word2 = reorder(word2, contribution)) %>% 
+  ggplot(aes(word2, n * value, fill = n * value > 0)) +
+  geom_col(show.legend = FALSE) +
+  xlab("Words preceded \"not\"") +
+  ylab("Sentiment score * number of occurrences") +
+  coord_flip()
+```
+Adding other negation words to "not" the assumption still holds true.Furthermore,
+I extended the number of the words being displayed in the graph. 
+The number of negative words being negated is still not greater than the positive
+ones. So the predicted skewedness is still true.
+```{r,warning=FALSE, error=FALSE}
+# custom negation words
+negation_words <- c("not", "no", "never", "without")
+
+negated_words <- bigram_trilogy_sep %>% 
+  filter(word1 %in% negation_words) %>% 
+  inner_join(get_sentiments("afinn"), by = c(word2 = "word")) %>% 
+  count(word1, word2, value, sort = TRUE) %>% 
+  ungroup()
+
+# plotting code missing 
+# with this method we could reverse some of the sentiment and get a more 
+# accurate score for the books i guess
+negated_words %>% 
+  mutate(contribution = n * value) %>% 
+  arrange(desc(abs(contribution))) %>% 
+  head(50) %>% 
+  mutate(word2 = reorder(word2, contribution)) %>% 
+  ggplot(aes(word2, n * value, fill = n * value > 0)) +
+  geom_col(show.legend = FALSE) +
+  xlab("Words preceded by negation words") +
+  ylab("Sentiment score * number of occurrences") +
+  coord_flip()
+
+```
+In this graph one can see the connections, their strenght and direction.
+This telly us quickly that the word district has it's stronges connection to 
+the number 12. All other bigram words do not have multiple connections but
+one can see how important the bigram is by the thickness of the arrow.
+```{r,warning=FALSE, error=FALSE}
+library(igraph)
+
+bigram_trilogy_count
+
+bigram_graph <- bigram_trilogy_count %>% 
+  filter(n > 20) %>% 
+  graph_from_data_frame()
+
+bigram_graph
+library(ggraph)
+set.seed(2022)
+a <- grid::arrow(type = "closed", length = unit(.15, "inches"))
+
+ggraph(bigram_graph, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a, end_cap = circle(.07, 'inches')) +
+  geom_node_point(color = "lightblue", size = 5) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  theme_void()
+```
+
+# Conclusion
+
+Even though I did not gain more insight into the books or the corpus I gained insight
+into the different dictionaries that are available and how there influence 
+analysis conducted using them.The lacking insight might be due to size of the 
+corpus analysed. I already knew the ins and outs of the books so using them
+to e.g. analyse dictionaries makes much more sense than to analyse them to gaining
+further insight into the books.
+A vast corpus which is beforehand not read by the coder probably makes more sense.
+For example a corpus comprised of thousands of news artikles over years (impossible
+to read for one analysis) would actually give the coder insight into the texts 
+analysed.
+
+# Acknowledgement
+
+This code is largely influenced or modeled after the code in the book 
+"Textmining with R" by Julia Silge.
+I worked through the book and then wrote this analysis of the Hunger Games 
+Trilogy by Suzanne Collins.
